@@ -78,18 +78,18 @@ impl StartupHandler for PgConnectionHandler {
 
 // Extract output schema from the projection clause
 
+fn text_field(name: &str) -> FieldInfo {
+    FieldInfo::new(name.to_string(), None, None, Type::VARCHAR, FieldFormat::Text)
+}
+
+fn numeric_field(name: &str) -> FieldInfo {
+    FieldInfo::new(name.to_string(), None, None, Type::INT4, FieldFormat::Text)
+}
+
+
 impl PgConnectionHandler {
     fn extract_schema(&self, select: &Select) -> Vec<FieldInfo> {
-        let default_schema = vec![
-            FieldInfo::new(
-                "a".to_string(),
-                None,
-                None,
-                pgwire::api::Type::VARCHAR,
-                FieldFormat::Text,
-            ),
-            FieldInfo::new("b".to_string(), None, None, Type::INT4, FieldFormat::Text),
-        ];
+        let default_schema = vec![ text_field("a"), numeric_field("b") ];
 
         // Create a schema for each of these things
         let mut schema: Vec<FieldInfo> = Vec::new();
@@ -105,6 +105,22 @@ impl PgConnectionHandler {
                         Type::TEXT,
                         FieldFormat::Text,
                     )),
+                    Expr::Value(value) => match &value {
+                        sqlparser::ast::Value::Number(_, _) => schema.push(numeric_field("value")),
+                        sqlparser::ast::Value::SingleQuotedString(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::DollarQuotedString(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::EscapedStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::SingleQuotedByteStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::DoubleQuotedByteStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::RawStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::NationalStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::HexStringLiteral(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::DoubleQuotedString(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::Boolean(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::Null => schema.push(text_field("value")),
+                        sqlparser::ast::Value::Placeholder(_) => todo!(),
+                        sqlparser::ast::Value::UnQuotedString(_) => todo!(),
+                    },
                     _ => todo!("bad stuff"),
                 },
                 _ => todo!("whoops"),

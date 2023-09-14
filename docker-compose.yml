@@ -1,0 +1,9 @@
+services:
+  proxy:
+    build: .
+    ports:
+      - "5555:5555"
+  metabase:
+    image: "metabase/metabase"
+    ports:
+      - "3000:3000"
