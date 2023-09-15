@@ -21,7 +21,7 @@ use pgwire::messages::data::DataRow;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use pgwire::tokio::process_socket;
 use querylog::macros::row_vec;
-use querylog::{make_query_response, numeric_field, text_field, SimpleRow};
+use querylog::{make_query_response, numeric_field, text_field, FieldValue, SimpleRow};
 use sqlparser::ast::{Expr, Ident, Query, Select, SelectItem, SetExpr};
 use sqlparser::parser::Parser;
 use tracing::instrument;
@@ -105,7 +105,11 @@ impl PgConnectionHandler {
 
         // Fake data strings here
         for _ in 0..10 {
-            let row = SimpleRow::new(schema.clone(), row_vec!["Hello World"]).try_into();
+            let fields = schema
+                .iter()
+                .map(|field| FieldValue::String(format!("Hello {}", field.name().as_str())))
+                .collect::<Vec<_>>();
+            let row = SimpleRow::new(schema.clone(), fields).try_into();
             responses.push(row);
         }
 
@@ -285,7 +289,9 @@ impl StartupHandler for LoggingNoopAuthenticator {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Setup logging
-    tracing_subscriber::fmt().with_span_events(FmtSpan::CLOSE).init();
+    tracing_subscriber::fmt()
+        .with_span_events(FmtSpan::CLOSE)
+        .init();
 
     let connection = Arc::new(PgConnectionHandler {
         portal_store: Arc::new(MemPortalStore::new()),
