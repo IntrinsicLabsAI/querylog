@@ -15,15 +15,17 @@ use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler, StatementOrPo
 use pgwire::api::results::{DescribeResponse, FieldFormat, FieldInfo, QueryResponse, Response};
 use pgwire::api::stmt::NoopQueryParser;
 use pgwire::api::store::MemPortalStore;
-use pgwire::api::{ClientInfo, MakeHandler, PgWireConnectionState, StatelessMakeHandler, Type};
+use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::data::DataRow;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use pgwire::tokio::process_socket;
 use querylog::macros::row_vec;
-use querylog::{SimpleRow, make_query_response, text_field, numeric_field};
+use querylog::{make_query_response, numeric_field, text_field, SimpleRow};
 use sqlparser::ast::{Expr, Ident, Query, Select, SelectItem, SetExpr};
 use sqlparser::parser::Parser;
+use tracing::instrument;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 /// Top-level connection data type that all handling logic is attached on.
 struct PgConnectionHandler {
@@ -31,48 +33,8 @@ struct PgConnectionHandler {
     portal_store: Arc<MemPortalStore<String>>,
 }
 
-// Make a new handler for the connection process
-#[async_trait]
-impl StartupHandler for PgConnectionHandler {
-    async fn on_startup<C>(
-        &self,
-        client: &mut C,
-        message: PgWireFrontendMessage,
-    ) -> PgWireResult<()>
-    where
-        C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
-        C::Error: Debug,
-    {
-        match client.state() {
-            PgWireConnectionState::AwaitingStartup => println!("AwaitingStartup"),
-            PgWireConnectionState::AuthenticationInProgress => println!("AuthenticationInProgress"),
-            PgWireConnectionState::ReadyForQuery => println!("ReadyForQuery"),
-            PgWireConnectionState::QueryInProgress => println!("QueryInProgress"),
-        };
-
-        match message {
-            PgWireFrontendMessage::Startup(ref startup) => println!("Startup msg: {:?}", startup),
-            PgWireFrontendMessage::Query(ref query) => println!("query: {:?}", query),
-            PgWireFrontendMessage::PasswordMessageFamily(_) => {}
-            PgWireFrontendMessage::Parse(_) => {}
-            PgWireFrontendMessage::Close(_) => {}
-            PgWireFrontendMessage::Bind(_) => {}
-            PgWireFrontendMessage::Describe(_) => {}
-            PgWireFrontendMessage::Execute(_) => {}
-            PgWireFrontendMessage::Flush(_) => {}
-            PgWireFrontendMessage::Sync(_) => {}
-            PgWireFrontendMessage::Terminate(_) => {}
-            PgWireFrontendMessage::CopyData(_) => {}
-            PgWireFrontendMessage::CopyFail(_) => {}
-            PgWireFrontendMessage::CopyDone(_) => {}
-        };
-
-        Ok(())
-    }
-}
-
-
 impl PgConnectionHandler {
+    #[instrument(skip(self))]
     fn extract_schema(&self, select: &Select) -> Vec<FieldInfo> {
         let default_schema = vec![text_field("a"), numeric_field("b")];
 
@@ -133,6 +95,7 @@ impl PgConnectionHandler {
         schema
     }
 
+    #[instrument(skip(self))]
     fn handle_select<'a>(&self, select: &Query) -> PgWireResult<Vec<Response<'a>>> {
         let mut responses = Vec::new();
         let schema = Arc::new(match select.body.deref() {
@@ -152,18 +115,18 @@ impl PgConnectionHandler {
         ))])
     }
 
+    #[instrument(skip(self))]
     fn empty_result<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
         Ok(vec![Response::EmptyQuery])
     }
 
+    #[instrument(skip(self))]
     fn handle_show<'a>(&self, variables: &[Ident]) -> PgWireResult<Vec<Response<'a>>> {
         let text = variables
             .iter()
             .map(|id| id.to_string())
             .collect::<Vec<String>>()
             .join(" ");
-
-        println!("processing SHOW {}", &text);
 
         let transaction_isolation_level_schema =
             Arc::new(vec![text_field("transaction_isolation")]);
@@ -187,6 +150,7 @@ impl PgConnectionHandler {
         Ok(responses)
     }
 
+    #[instrument(skip(self))]
     fn handle_stmt<'a>(&self, query: &str) -> PgWireResult<Vec<Response<'a>>> {
         let dialect = sqlparser::dialect::GenericDialect;
 
@@ -200,7 +164,7 @@ impl PgConnectionHandler {
                         return self.handle_show(variable)
                     }
                     _ => {
-                        println!("UNMATCHED STMT: {:?}", stmt);
+                        tracing::error!("unmatched statement: {:?}", stmt);
                         return self.empty_result();
                     }
                 }
@@ -223,13 +187,11 @@ impl PgConnectionHandler {
 
 #[async_trait]
 impl SimpleQueryHandler for PgConnectionHandler {
-    async fn do_query<'a, C>(&self, client: &C, query: &'a str) -> PgWireResult<Vec<Response<'a>>>
+    #[instrument(skip(self, _client))]
+    async fn do_query<'a, C>(&self, _client: &C, query: &'a str) -> PgWireResult<Vec<Response<'a>>>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let login_info = LoginInfo::from_client_info(client);
-
-        println!("user={:?} initial query: {:?}", &login_info, query);
         self.handle_stmt(query)
     }
 }
@@ -248,6 +210,7 @@ impl ExtendedQueryHandler for PgConnectionHandler {
         self.query_parser.clone()
     }
 
+    #[instrument(skip(self, _client))]
     async fn do_describe<C>(
         &self,
         _client: &mut C,
@@ -281,7 +244,7 @@ impl ExtendedQueryHandler for PgConnectionHandler {
     {
         let login_info = LoginInfo::from_client_info(client);
         let query = portal.statement().statement();
-        println!(
+        tracing::info!(
             "EXTENDED_QUERY user: {:?}     query: {:?}",
             &login_info,
             query.as_str()
@@ -304,6 +267,7 @@ struct LoggingNoopAuthenticator(NoopStartupHandler);
 
 #[async_trait]
 impl StartupHandler for LoggingNoopAuthenticator {
+    #[instrument(skip(self, client))]
     async fn on_startup<C>(
         &self,
         client: &mut C,
@@ -314,17 +278,16 @@ impl StartupHandler for LoggingNoopAuthenticator {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        let login_info = LoginInfo::from_client_info(client);
-        println!("STARTUP MESSAGE: user={:?} {:?}", &login_info, &message);
-
-        // Ensure that the DB is setup properly.
-        return self.0.on_startup(client, message).await;
+        self.0.on_startup(client, message).await
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let startup_handler = Arc::new(PgConnectionHandler {
+    // Setup logging
+    tracing_subscriber::fmt().with_span_events(FmtSpan::CLOSE).init();
+
+    let connection = Arc::new(PgConnectionHandler {
         portal_store: Arc::new(MemPortalStore::new()),
         query_parser: Arc::new(NoopQueryParser::new()),
     });
@@ -335,16 +298,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let listener = tokio::net::TcpListener::bind(&"0.0.0.0:5555").await?;
 
-    println!("serving Postgres protocol (insecure) on 0.0.0.0:5555");
+    tracing::info!("serving Postgres protocol (insecure) on 0.0.0.0:5555");
 
     loop {
         let (conn, addr) = listener.accept().await?;
 
         let authenticator_factory = Arc::clone(&authenticator_factory);
-        let query_handler = Arc::clone(&startup_handler);
+        let query_handler = Arc::clone(&connection);
         let extended_query_handler = Arc::clone(&query_handler);
         tokio::spawn(async move {
-            println!("connection from {:?}", &addr);
+            tracing::info!("connection from {:?}", &addr);
 
             let authenticator = authenticator_factory.make();
 
