@@ -668,6 +668,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "pgwire",
+ "postgres-types",
  "sqlparser",
  "tokio",
 ]

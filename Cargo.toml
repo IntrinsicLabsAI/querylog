@@ -14,3 +14,4 @@ futures-sink = "0.3"
 futures-util = "0.3"
 sqlparser = "0.37.0"
 anyhow = { version = "1.0.75", features = ["backtrace"] }
+postgres-types = "0.2.6"

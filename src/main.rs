@@ -1,32 +1,31 @@
 // Create a wire protocol listener
 
 use std::error::Error;
-use std::fmt::{Debug, Pointer};
+use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use anyhow::bail;
 use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use futures::stream;
 use futures_sink::Sink;
-use futures_util::Stream;
 use pgwire::api::auth::noop::NoopStartupHandler;
 use pgwire::api::auth::{LoginInfo, StartupHandler};
 use pgwire::api::portal::Portal;
 use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler, StatementOrPortal};
-use pgwire::api::results::{
-    DataRowEncoder, DescribeResponse, FieldFormat, FieldInfo, QueryResponse, Response,
-};
+use pgwire::api::results::{DescribeResponse, FieldFormat, FieldInfo, QueryResponse, Response};
 use pgwire::api::stmt::NoopQueryParser;
 use pgwire::api::store::MemPortalStore;
 use pgwire::api::{ClientInfo, MakeHandler, PgWireConnectionState, StatelessMakeHandler, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
-use pgwire::messages::{response, PgWireBackendMessage, PgWireFrontendMessage};
+use pgwire::messages::data::DataRow;
+use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use pgwire::tokio::process_socket;
-use sqlparser::ast::{Expr, Query, Select, SelectItem, SetExpr};
+use querylog::macros::row_vec;
+use querylog::{SimpleRow, make_query_response, text_field, numeric_field};
+use sqlparser::ast::{Expr, Ident, Query, Select, SelectItem, SetExpr};
 use sqlparser::parser::Parser;
 
-/// Simple handler for all things
+/// Top-level connection data type that all handling logic is attached on.
 struct PgConnectionHandler {
     query_parser: Arc<NoopQueryParser>,
     portal_store: Arc<MemPortalStore<String>>,
@@ -44,7 +43,6 @@ impl StartupHandler for PgConnectionHandler {
         C: ClientInfo + Sink<PgWireBackendMessage> + Unpin + Send,
         C::Error: Debug,
     {
-        println!("startup executing");
         match client.state() {
             PgWireConnectionState::AwaitingStartup => println!("AwaitingStartup"),
             PgWireConnectionState::AuthenticationInProgress => println!("AuthenticationInProgress"),
@@ -54,8 +52,8 @@ impl StartupHandler for PgConnectionHandler {
 
         match message {
             PgWireFrontendMessage::Startup(ref startup) => println!("Startup msg: {:?}", startup),
-            PgWireFrontendMessage::PasswordMessageFamily(_) => {}
             PgWireFrontendMessage::Query(ref query) => println!("query: {:?}", query),
+            PgWireFrontendMessage::PasswordMessageFamily(_) => {}
             PgWireFrontendMessage::Parse(_) => {}
             PgWireFrontendMessage::Close(_) => {}
             PgWireFrontendMessage::Bind(_) => {}
@@ -73,23 +71,10 @@ impl StartupHandler for PgConnectionHandler {
     }
 }
 
-// Return a silly in-memory schema that we can use for validation here instead
-// Convert types from one framework to this new framework, e.g. Strings, numbers
-
-// Extract output schema from the projection clause
-
-fn text_field(name: &str) -> FieldInfo {
-    FieldInfo::new(name.to_string(), None, None, Type::VARCHAR, FieldFormat::Text)
-}
-
-fn numeric_field(name: &str) -> FieldInfo {
-    FieldInfo::new(name.to_string(), None, None, Type::INT4, FieldFormat::Text)
-}
-
 
 impl PgConnectionHandler {
     fn extract_schema(&self, select: &Select) -> Vec<FieldInfo> {
-        let default_schema = vec![ text_field("a"), numeric_field("b") ];
+        let default_schema = vec![text_field("a"), numeric_field("b")];
 
         // Create a schema for each of these things
         let mut schema: Vec<FieldInfo> = Vec::new();
@@ -107,15 +92,33 @@ impl PgConnectionHandler {
                     )),
                     Expr::Value(value) => match &value {
                         sqlparser::ast::Value::Number(_, _) => schema.push(numeric_field("value")),
-                        sqlparser::ast::Value::SingleQuotedString(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::DollarQuotedString(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::EscapedStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::SingleQuotedByteStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::DoubleQuotedByteStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::RawStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::NationalStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::HexStringLiteral(_) => schema.push(text_field("value")),
-                        sqlparser::ast::Value::DoubleQuotedString(_) => schema.push(text_field("value")),
+                        sqlparser::ast::Value::SingleQuotedString(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::DollarQuotedString(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::EscapedStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::SingleQuotedByteStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::DoubleQuotedByteStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::RawStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::NationalStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::HexStringLiteral(_) => {
+                            schema.push(text_field("value"))
+                        }
+                        sqlparser::ast::Value::DoubleQuotedString(_) => {
+                            schema.push(text_field("value"))
+                        }
                         sqlparser::ast::Value::Boolean(_) => schema.push(text_field("value")),
                         sqlparser::ast::Value::Null => schema.push(text_field("value")),
                         sqlparser::ast::Value::Placeholder(_) => todo!(),
@@ -133,22 +136,13 @@ impl PgConnectionHandler {
     fn handle_select<'a>(&self, select: &Query) -> PgWireResult<Vec<Response<'a>>> {
         let mut responses = Vec::new();
         let schema = Arc::new(match select.body.deref() {
-            SetExpr::Select(selection) => self.extract_schema(&selection),
+            SetExpr::Select(selection) => self.extract_schema(selection),
             _ => todo!("bad stuff happened"),
         });
 
         // Fake data strings here
         for _ in 0..10 {
-            let row = {
-                let mut enc = DataRowEncoder::new(Arc::clone(&schema));
-                // Create some random data for every field
-                for field in schema.iter() {
-                    // Depending on the data type, we do one or the other here
-                    enc.encode_field(&format!("Hello world {}", field.name()))?;
-                }
-                enc.finish()
-            };
-
+            let row = SimpleRow::new(schema.clone(), row_vec!["Hello World"]).try_into();
             responses.push(row);
         }
 
@@ -161,6 +155,70 @@ impl PgConnectionHandler {
     fn empty_result<'a>(&self) -> PgWireResult<Vec<Response<'a>>> {
         Ok(vec![Response::EmptyQuery])
     }
+
+    fn handle_show<'a>(&self, variables: &[Ident]) -> PgWireResult<Vec<Response<'a>>> {
+        let text = variables
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        println!("processing SHOW {}", &text);
+
+        let transaction_isolation_level_schema =
+            Arc::new(vec![text_field("transaction_isolation")]);
+
+        let responses = match text.to_lowercase().as_str() {
+            "transaction isolation level" => {
+                let row: DataRow = SimpleRow::new(
+                    transaction_isolation_level_schema.clone(),
+                    row_vec!["read committed"],
+                )
+                .try_into()?;
+
+                vec![make_query_response(
+                    transaction_isolation_level_schema.clone(),
+                    &[row],
+                )]
+            }
+            _ => todo!("unhandled variable {:?}", text),
+        };
+
+        Ok(responses)
+    }
+
+    fn handle_stmt<'a>(&self, query: &str) -> PgWireResult<Vec<Response<'a>>> {
+        let dialect = sqlparser::dialect::GenericDialect;
+
+        if let Ok(ast) = Parser::parse_sql(&dialect, query) {
+            if let Some(stmt) = ast.get(0) {
+                match stmt {
+                    sqlparser::ast::Statement::Query(ref query) => {
+                        return self.handle_select(query)
+                    }
+                    sqlparser::ast::Statement::ShowVariable { variable } => {
+                        return self.handle_show(variable)
+                    }
+                    _ => {
+                        println!("UNMATCHED STMT: {:?}", stmt);
+                        return self.empty_result();
+                    }
+                }
+            } else {
+                PgWireResult::Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "error".to_string(),
+                    "CODE".to_string(),
+                    "failed to parse statement".to_string(),
+                ))))
+            }
+        } else {
+            PgWireResult::Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "bad".to_string(),
+                "CODE".to_string(),
+                "failed to parse statement".to_string(),
+            ))))
+        }
+    }
 }
 
 #[async_trait]
@@ -172,31 +230,7 @@ impl SimpleQueryHandler for PgConnectionHandler {
         let login_info = LoginInfo::from_client_info(client);
 
         println!("user={:?} initial query: {:?}", &login_info, query);
-
-        // Extract the query, make sure that we have proper query handling here.
-        let dialect = sqlparser::dialect::GenericDialect::default();
-        if let Ok(ast) = Parser::parse_sql(&dialect, query) {
-            if let Some(stmt) = ast.get(0) {
-                match stmt {
-                    sqlparser::ast::Statement::Query(ref query) => {
-                        return self.handle_select(query)
-                    }
-                    _ => return self.empty_result(),
-                }
-            } else {
-                return PgWireResult::Err(PgWireError::UserError(Box::new(ErrorInfo::new(
-                    "error".to_string(),
-                    "CODE".to_string(),
-                    "failed to parse statement".to_string(),
-                ))));
-            }
-        } else {
-            return PgWireResult::Err(PgWireError::UserError(Box::new(ErrorInfo::new(
-                "bad".to_string(),
-                "CODE".to_string(),
-                "failed to parse statement".to_string(),
-            ))));
-        }
+        self.handle_stmt(query)
     }
 }
 
@@ -216,31 +250,53 @@ impl ExtendedQueryHandler for PgConnectionHandler {
 
     async fn do_describe<C>(
         &self,
-        client: &mut C,
-        target: StatementOrPortal<'_, Self::Statement>,
+        _client: &mut C,
+        stmt: StatementOrPortal<'_, Self::Statement>,
     ) -> PgWireResult<DescribeResponse>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        Ok(DescribeResponse::no_data())
+        let stmt = match stmt {
+            StatementOrPortal::Statement(stmt) => stmt.statement().clone(),
+            StatementOrPortal::Portal(portal) => portal.statement().statement().clone(),
+        };
+
+        // Figure out how we're going to get everything selected as well
+        if &stmt.to_lowercase() == "select 1" {
+            Ok(DescribeResponse::new(None, vec![numeric_field("value")]))
+        } else {
+            // Describe for anything other than a SELECT
+            Ok(DescribeResponse::no_data())
+        }
     }
 
     async fn do_query<'a, 'b: 'a, C>(
         &'b self,
         client: &mut C,
         portal: &'a Portal<Self::Statement>,
-        max_rows: usize,
+        _max_rows: usize,
     ) -> PgWireResult<Response<'a>>
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
         let login_info = LoginInfo::from_client_info(client);
+        let query = portal.statement().statement();
         println!(
-            "user: {:?}     query: {:?}",
+            "EXTENDED_QUERY user: {:?}     query: {:?}",
             &login_info,
-            portal.statement().statement()
+            query.as_str()
         );
-        Ok(Response::EmptyQuery)
+
+        match self.handle_stmt(query.as_str()) {
+            Ok(responses) => {
+                if let Some(response) = responses.into_iter().next() {
+                    return Ok(response);
+                } else {
+                    return Ok(Response::EmptyQuery);
+                }
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 
@@ -268,8 +324,6 @@ impl StartupHandler for LoggingNoopAuthenticator {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("Hello, world!");
-
     let startup_handler = Arc::new(PgConnectionHandler {
         portal_store: Arc::new(MemPortalStore::new()),
         query_parser: Arc::new(NoopQueryParser::new()),
@@ -281,6 +335,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let listener = tokio::net::TcpListener::bind(&"0.0.0.0:5555").await?;
 
+    println!("serving Postgres protocol (insecure) on 0.0.0.0:5555");
+
     loop {
         let (conn, addr) = listener.accept().await?;
 
@@ -288,7 +344,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let query_handler = Arc::clone(&startup_handler);
         let extended_query_handler = Arc::clone(&query_handler);
         tokio::spawn(async move {
-            println!("starting socket process loop with {:?}", &addr);
+            println!("connection from {:?}", &addr);
 
             let authenticator = authenticator_factory.make();
 
