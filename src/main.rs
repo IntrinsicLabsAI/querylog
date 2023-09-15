@@ -159,6 +159,7 @@ impl PgConnectionHandler {
         let dialect = sqlparser::dialect::GenericDialect;
 
         if let Ok(ast) = Parser::parse_sql(&dialect, query) {
+            tracing::info!("number of stmts: {}", ast.len());
             if let Some(stmt) = ast.get(0) {
                 match stmt {
                     sqlparser::ast::Statement::Query(ref query) => {
@@ -228,9 +229,13 @@ impl ExtendedQueryHandler for PgConnectionHandler {
             StatementOrPortal::Portal(portal) => portal.statement().statement().clone(),
         };
 
-        // Figure out how we're going to get everything selected as well
         if &stmt.to_lowercase() == "select 1" {
             Ok(DescribeResponse::new(None, vec![numeric_field("value")]))
+        } else if &stmt.to_lowercase() == "show transaction isolation level" {
+            Ok(DescribeResponse::new(
+                None,
+                vec![text_field("transaction_level")],
+            ))
         } else {
             // Describe for anything other than a SELECT
             Ok(DescribeResponse::no_data())
@@ -246,13 +251,8 @@ impl ExtendedQueryHandler for PgConnectionHandler {
     where
         C: ClientInfo + Unpin + Send + Sync,
     {
-        let login_info = LoginInfo::from_client_info(client);
+        let _login_info = LoginInfo::from_client_info(client);
         let query = portal.statement().statement();
-        tracing::info!(
-            "EXTENDED_QUERY user: {:?}     query: {:?}",
-            &login_info,
-            query.as_str()
-        );
 
         match self.handle_stmt(query.as_str()) {
             Ok(responses) => {

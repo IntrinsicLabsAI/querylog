@@ -1,4 +1,5 @@
 // Include a special wrapper row type that we use to translate back and forth with the DataRow
+pub mod catalog;
 pub mod macros;
 
 use std::sync::Arc;

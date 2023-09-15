@@ -1,0 +1,4 @@
+{
+    "editor.parameterHints.enabled": false,
+    "rust-analyzer.inlayHints.parameterHints.enable": false
+}
