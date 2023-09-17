@@ -2,9 +2,7 @@
 mod test {
     use arrow_schema::{DataType, Field};
     use datafusion::{
-        arrow::{
-            datatypes::SchemaBuilder,
-        },
+        arrow::datatypes::SchemaBuilder,
         catalog::{
             schema::{MemorySchemaProvider, SchemaProvider},
             CatalogProvider, MemoryCatalogProvider,
@@ -114,13 +112,7 @@ mod test {
                                 .collect(),
                         ),
                         Arc::new(Field::new("item", DataType::Utf8, false)),
-                        // Arc::new(Field::new_list(
-                        //     "current_schemas",
-                        //     Arc::new(Field::new("item", DataType::Utf8, false)),
-                        //     false,
-                        // )),
                     )));
-                    // return Ok(ColumnarValue::Array(Arc::new(StringArray::from(value))));
                 } else {
                     return Err(DataFusionError::Internal(
                         "Failed to extract bool function arg".to_string(),
